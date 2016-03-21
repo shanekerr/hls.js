@@ -12,7 +12,7 @@ class MP4Remuxer {
   constructor(observer) {
     this.observer = observer;
     this.ISGenerated = false;
-    this.PES2MP4SCALEFACTOR = 4;
+    this.PES2MP4SCALEFACTOR = 1;
     this.PES_TIMESCALE = 90000;
     this.MP4_TIMESCALE = this.PES_TIMESCALE / this.PES2MP4SCALEFACTOR;
   }
@@ -142,16 +142,36 @@ class MP4Remuxer {
         firstPTS, firstDTS, lastDTS,
         pts, dts, ptsnorm, dtsnorm,
         flags,
-        samples = [];
+        inputSamples = track.samples,
+        mp4Samples = [];
     /* concatenate the video data and construct the mdat in place
       (need 8 more bytes to fill length and mpdat type) */
     mdat = new Uint8Array(track.len + (4 * track.nbNalu) + 8);
     view = new DataView(mdat.buffer);
     view.setUint32(0, mdat.byteLength);
     mdat.set(MP4.types.mdat, 4);
-    while (track.samples.length) {
-      avcSample = track.samples.shift();
+
+    // sort sample by PTS to compute sample duration
+    inputSamples.sort(function(a, b) {
+      return (a.pts-b.pts);
+    });
+
+    for (let i = 0; i < inputSamples.length - 1; i++) {
+      inputSamples[i].duration = Math.max(1,inputSamples[i+1].pts - inputSamples[i].pts);
+    }
+    var lastSampleDuration = inputSamples[inputSamples.length-1].duration = inputSamples[inputSamples.length-2].duration;
+
+    //console.table(inputSamples);
+
+
+    // sort sample by DTS to create MP4 boxes
+    inputSamples.sort(function(a, b) {
+      return (a.dts-b.dts);
+    });
+    while (inputSamples.length) {
+      avcSample = inputSamples.shift();
       mp4SampleLength = 0;
+      //console.log(avcSample);
       // convert NALU bitstream to MP4 format (prepend NALU with size field)
       while (avcSample.units.units.length) {
         unit = avcSample.units.units.shift();
@@ -165,18 +185,11 @@ class MP4Remuxer {
       dts = avcSample.dts - this._initDTS;
       // ensure DTS is not bigger than PTS
       dts = Math.min(pts,dts);
-      //logger.log(`Video/PTS/DTS:${Math.round(pts/90)}/${Math.round(dts/90)}`);
       // if not first AVC sample of video track, normalize PTS/DTS with previous sample value
       // and ensure that sample duration is positive
       if (lastDTS !== undefined) {
         ptsnorm = this._PTSNormalize(pts, lastDTS);
         dtsnorm = this._PTSNormalize(dts, lastDTS);
-        var sampleDuration = (dtsnorm - lastDTS) / pes2mp4ScaleFactor;
-        if (sampleDuration <= 0) {
-          logger.log(`invalid sample duration at PTS/DTS: ${avcSample.pts}/${avcSample.dts}:${sampleDuration}`);
-          sampleDuration = 1;
-        }
-        mp4Sample.duration = sampleDuration;
       } else {
         let nextAvcDts, delta;
         if (contiguous) {
@@ -210,7 +223,9 @@ class MP4Remuxer {
       //console.log('PTS/DTS/initDTS/normPTS/normDTS/relative PTS : ${avcSample.pts}/${avcSample.dts}/${this._initDTS}/${ptsnorm}/${dtsnorm}/${(avcSample.pts/4294967296).toFixed(3)}');
       mp4Sample = {
         size: mp4SampleLength,
-        duration: 0,
+        start : ptsnorm / pes2mp4ScaleFactor,
+        duration: avcSample.duration / pes2mp4ScaleFactor,
+        end : (ptsnorm + avcSample.duration) / pes2mp4ScaleFactor,
         cts: (ptsnorm - dtsnorm) / pes2mp4ScaleFactor,
         flags: {
           isLeading: 0,
@@ -228,26 +243,22 @@ class MP4Remuxer {
         flags.dependsOn = 1;
         flags.isNonSync = 1;
       }
-      samples.push(mp4Sample);
+      mp4Samples.push(mp4Sample);
       lastDTS = dtsnorm;
-    }
-    var lastSampleDuration = 0;
-    if (samples.length >= 2) {
-      lastSampleDuration = samples[samples.length - 2].duration;
-      mp4Sample.duration = lastSampleDuration;
     }
     // next AVC sample DTS should be equal to last sample DTS + last sample duration
     this.nextAvcDts = dtsnorm + lastSampleDuration * pes2mp4ScaleFactor;
     track.len = 0;
     track.nbNalu = 0;
-    if(samples.length && navigator.userAgent.toLowerCase().indexOf('chrome') > -1) {
-      flags = samples[0].flags;
+    if(mp4Samples.length && navigator.userAgent.toLowerCase().indexOf('chrome') > -1) {
+      flags = mp4Samples[0].flags;
     // chrome workaround, mark first sample as being a Random Access Point to avoid sourcebuffer append issue
     // https://code.google.com/p/chromium/issues/detail?id=229412
       flags.dependsOn = 2;
       flags.isNonSync = 0;
     }
-    track.samples = samples;
+    track.samples = mp4Samples;
+    console.table(mp4Samples);
     moof = MP4.moof(track.sequenceNumber++, firstDTS / pes2mp4ScaleFactor, track);
     track.samples = [];
     this.observer.trigger(Event.FRAG_PARSING_DATA, {
@@ -258,7 +269,7 @@ class MP4Remuxer {
       startDTS: firstDTS / pesTimeScale,
       endDTS: this.nextAvcDts / pesTimeScale,
       type: 'video',
-      nb: samples.length
+      nb: mp4Samples.length
     });
   }
 
@@ -297,7 +308,7 @@ class MP4Remuxer {
         mp4Sample.duration = (dtsnorm - lastDTS) / pes2mp4ScaleFactor;
         if(Math.abs(mp4Sample.duration - expectedSampleDuration) > expectedSampleDuration/10) {
           // more than 10% diff between sample duration and expectedSampleDuration .... lets log that
-          logger.log(`invalid AAC sample duration at PTS ${Math.round(pts/90)},should be 1024,found :${Math.round(mp4Sample.duration*track.audiosamplerate/track.timescale)}`);
+          //logger.log(`invalid AAC sample duration at PTS ${Math.round(pts/90)},should be 1024,found :${Math.round(mp4Sample.duration*track.audiosamplerate/track.timescale)}`);
         }
         // always adjust sample duration to avoid av sync issue
         mp4Sample.duration = expectedSampleDuration;
