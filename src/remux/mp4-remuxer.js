@@ -151,23 +151,11 @@ class MP4Remuxer {
     view.setUint32(0, mdat.byteLength);
     mdat.set(MP4.types.mdat, 4);
 
-    // sort sample by PTS to compute sample duration
-    inputSamples.sort(function(a, b) {
-      return (a.pts-b.pts);
-    });
-
     for (let i = 0; i < inputSamples.length - 1; i++) {
       inputSamples[i].duration = Math.max(1,inputSamples[i+1].pts - inputSamples[i].pts);
     }
     var lastSampleDuration = inputSamples[inputSamples.length-1].duration = inputSamples[inputSamples.length-2].duration;
 
-    //console.table(inputSamples);
-
-
-    // sort sample by DTS to create MP4 boxes
-    inputSamples.sort(function(a, b) {
-      return (a.dts-b.dts);
-    });
     while (inputSamples.length) {
       avcSample = inputSamples.shift();
       mp4SampleLength = 0;
@@ -258,7 +246,6 @@ class MP4Remuxer {
       flags.isNonSync = 0;
     }
     track.samples = mp4Samples;
-    //console.table(mp4Samples);
 
     console.log(`start,duration,end,cts`);
     for (let i = 0; i < mp4Samples.length - 1; i++) {
