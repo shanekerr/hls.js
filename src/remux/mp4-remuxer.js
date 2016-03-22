@@ -258,7 +258,12 @@ class MP4Remuxer {
       flags.isNonSync = 0;
     }
     track.samples = mp4Samples;
-    console.table(mp4Samples);
+    //console.table(mp4Samples);
+
+    console.log(`start,duration,end,cts`);
+    for (let i = 0; i < mp4Samples.length - 1; i++) {
+      console.log(`${mp4Samples[i].start},${mp4Samples[i].duration},${mp4Samples[i].end},${mp4Samples[i].cts}`);
+    }
     moof = MP4.moof(track.sequenceNumber++, firstDTS / pes2mp4ScaleFactor, track);
     track.samples = [];
     this.observer.trigger(Event.FRAG_PARSING_DATA, {
